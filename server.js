@@ -4,62 +4,70 @@ const express = require("express");
 const PORT = process.env.PORT || 3000;
 const app = express();
 
-const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// لو حبيت تقدم ملفات فرونت من السيرفر
+app.use(express.static("public"));
+
+const server = app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// WebSocket server
 const wss = new WebSocket.Server({ server });
 
-let clients = new Map(); // Map<ws, username>
-let groups = {}; // { groupName: Set<username> }
+let clients = new Map(); // key = ws, value = {username}
+
+function broadcastUserList() {
+  const users = Array.from(clients.values()).map(u => u.username);
+  const data = JSON.stringify({ type: "user_list", users });
+  for (let client of clients.keys()) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(data);
+    }
+  }
+}
 
 wss.on("connection", (ws) => {
-  console.log("New connection");
 
-  ws.on("message", (msg) => {
+  ws.on("message", (message) => {
     let data;
-    try { data = JSON.parse(msg.toString()); }
-    catch { return; }
+    try { data = JSON.parse(message); } 
+    catch (e) { return; }
 
-    if (!data.type) return;
-
-    // ================= USER REGISTER =================
+    // تسجيل المستخدم عند الدخول
     if (data.type === "register") {
-      clients.set(ws, data.username);
+      clients.set(ws, { username: data.username });
       broadcastUserList();
+      return;
     }
 
-    // ================= PRIVATE CHAT =================
-    else if (data.type === "private_chat") {
-      // data.to = username
-      for (let [client, uname] of clients) {
-        if (uname === data.to && client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({
-            type: "private_chat",
-            from: data.from,
-            text: data.text
-          }));
+    // Chat message
+    if (data.type === "chat") {
+      // إذا message فردي
+      if (data.to) {
+        // نرسل فقط للشخص المحدد
+        for (let [client, info] of clients.entries()) {
+          if (info.username === data.to && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              type: "chat",
+              from: data.from,
+              text: data.text
+            }));
+          }
         }
       }
-    }
-
-    // ================= GROUP CHAT =================
-    else if (data.type === "group_chat") {
-      const group = groups[data.group];
-      if (!group) return;
-      for (let [client, uname] of clients) {
-        if (group.has(uname) && client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify({
-            type: "group_chat",
-            from: data.from,
-            group: data.group,
-            text: data.text
-          }));
+      // جروب
+      else if (data.group && data.group.length > 0) {
+        for (let [client, info] of clients.entries()) {
+          if (data.group.includes(info.username) && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({
+              type: "chat",
+              from: data.from,
+              text: data.text,
+              group: true
+            }));
+          }
         }
       }
-    }
-
-    // ================= CREATE GROUP =================
-    else if (data.type === "create_group") {
-      const name = data.group;
-      groups[name] = new Set(data.members); // members = [username1, username2]
     }
   });
 
@@ -67,18 +75,4 @@ wss.on("connection", (ws) => {
     clients.delete(ws);
     broadcastUserList();
   });
-
-  ws.on("error", () => {
-    clients.delete(ws);
-    broadcastUserList();
-  });
 });
-
-function broadcastUserList() {
-  const userList = Array.from(clients.values());
-  for (let [client] of clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify({ type: "user_list", users: userList }));
-    }
-  }
-}
