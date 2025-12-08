@@ -14,14 +14,44 @@ const wss = new WebSocket.Server({ server });
 let clients = new Map();          // Map<username, ws>
 let privateChats = new Map();     // Map<chatKey, messages[]>
 let groupChats = new Map();       // Map<groupKey, messages[]>
-let userGroups = new Map();       // NEW: Map<username, groupKeys[]>
+let userGroups = new Map();       // Map<username, groupKeys[]>
 
+/* ---------- HELPER TO ADD USER TO GROUP ---------- */
 function addUserToGroup(username, groupKey) {
   if (!userGroups.has(username)) userGroups.set(username, []);
   const arr = userGroups.get(username);
   if (!arr.includes(groupKey)) arr.push(groupKey);
 }
 
+/* ---------- SEND GROUPS TO SPECIFIC USER ---------- */
+function sendUserGroups(user) {
+  if (!clients.has(user)) return;
+
+  const groups = userGroups.get(user) || [];
+  clients.get(user).send(JSON.stringify({
+    type: "group_list",
+    groups
+  }));
+}
+
+/* ---------- BROADCAST GROUPS TO EVERYONE ---------- */
+function broadcastUserGroups() {
+  clients.forEach((ws, user) => {
+    sendUserGroups(user);
+  });
+}
+
+/* ---------- BROADCAST USERS TO ALL ---------- */
+function broadcastUserList() {
+  const users = Array.from(clients.keys());
+  const msg = JSON.stringify({ type: "user_list", users });
+
+  clients.forEach(ws => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  });
+}
+
+/* ---------- CONNECTION HANDLER ---------- */
 wss.on("connection", (ws) => {
   let thisUser = null;
 
@@ -40,7 +70,7 @@ wss.on("connection", (ws) => {
         sendUserGroups(thisUser);
         break;
 
-      /* ------------ PRIV CHAT HISTORY -------- */
+      /* ------------ PRIVATE CHAT HISTORY -------- */
       case "get_chat":
         const chatKey = [thisUser, data.to].sort().join("_");
         ws.send(JSON.stringify({
@@ -50,7 +80,7 @@ wss.on("connection", (ws) => {
         }));
         break;
 
-      /* ------------ GROUP HISTORY ------------ */
+      /* ------------ GROUP CHAT HISTORY ------------ */
       case "get_group_chat":
         const groupKey = data.group.sort().join("_");
         ws.send(JSON.stringify({
@@ -69,7 +99,8 @@ wss.on("connection", (ws) => {
 
         group.forEach(u => addUserToGroup(u, gKey));
 
-        broadcastUserGroups();  // يخلي الجروب يظهر لكل الأعضاء
+        broadcastUserGroups();  // لتحديث الجروبات عند كل عضو
+        broadcastUserList();    // لتحديث الواجهة فوراً
         break;
 
       /* --------------- SEND MSG -------------- */
@@ -85,7 +116,7 @@ wss.on("connection", (ws) => {
           groupChats.get(gKey2).push({ from: thisUser, text, time });
 
           groupList.forEach(u => {
-            if (clients.has(u)) {
+            if (clients.has(u) && clients.get(u).readyState === WebSocket.OPEN) {
               clients.get(u).send(JSON.stringify({
                 type: "group_message",
                 groupId: gKey2,
@@ -106,7 +137,7 @@ wss.on("connection", (ws) => {
           privateChats.get(pKey).push({ from: thisUser, text, time });
 
           [thisUser, to].forEach(u => {
-            if (clients.has(u)) {
+            if (clients.has(u) && clients.get(u).readyState === WebSocket.OPEN) {
               clients.get(u).send(JSON.stringify({
                 type: "chat_message",
                 chatId: pKey,
@@ -131,31 +162,3 @@ wss.on("connection", (ws) => {
     broadcastUserList();
   });
 });
-
-/* ---------- SEND USERS TO ALL ---------- */
-function broadcastUserList() {
-  const users = Array.from(clients.keys());
-  const msg = JSON.stringify({ type: "user_list", users });
-
-  clients.forEach(ws => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-  });
-}
-
-/* -------- SEND GROUPS TO SPECIFIC USER ------- */
-function sendUserGroups(user) {
-  if (!clients.has(user)) return;
-
-  const groups = userGroups.get(user) || [];
-  clients.get(user).send(JSON.stringify({
-    type: "group_list",
-    groups
-  }));
-}
-
-/* -------- BROADCAST GROUPS TO EVERYONE ------- */
-function broadcastUserGroups() {
-  clients.forEach((ws, user) => {
-    sendUserGroups(user);
-  });
-}
