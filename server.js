@@ -3,76 +3,65 @@ const express = require("express");
 
 const PORT = process.env.PORT || 3000;
 const app = express();
-const server = app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
+const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 const wss = new WebSocket.Server({ server });
 
-// map username -> ws
+// حفظ اليوزرز أونلاين: { username: ws }
 let users = {};
 
-wss.on("connection", (ws) => {
-  let currentUsername = null;
+wss.on("connection", ws => {
 
-  ws.on("message", (message) => {
+  ws.on("message", msg => {
     let data;
-    try { data = JSON.parse(message.toString()); }
-    catch (e) { console.log("Non-JSON message ignored"); return; }
+    try { data = JSON.parse(msg); } 
+    catch(e) { return; }
 
-    if (!data.type) return;
-
-    // تسجيل اليوزر
-    if (data.type === "register") {
-      currentUsername = data.username;
-      users[currentUsername] = ws;
+    if(data.type === "register") {
+      ws.username = data.username;
+      users[data.username] = ws;
       broadcastUserList();
-      return;
     }
 
-    // شات فردي أو جروب
-    if (data.type === "chat") {
-      // فردي
-      if (data.to) {
-        if (users[data.to] && users[data.to].readyState === WebSocket.OPEN)
-          users[data.to].send(JSON.stringify({ type:"chat", from:data.from, text:data.text, to:data.to }));
-
-        // نرسل نسخة للمرسل
-        if (users[data.from] && users[data.from].readyState === WebSocket.OPEN)
-          users[data.from].send(JSON.stringify({ type:"chat", from:data.from, text:data.text, to:data.to }));
-      } 
-      // جروب
-      else if (data.group && Array.isArray(data.group)) {
-        data.group.forEach(u => {
-          if (users[u] && users[u].readyState === WebSocket.OPEN)
-            users[u].send(JSON.stringify({ type:"chat", from:data.from, text:data.text, group:data.group }));
+    else if(data.type === "chat") {
+      if(data.to) { 
+        // شات فردي
+        const target = users[data.to];
+        if(target && target.readyState === WebSocket.OPEN) {
+          target.send(JSON.stringify({ type:"chat", from:data.from, text:data.text }));
+        }
+        // رسائل الself تظهر عند المرسل نفسه
+        ws.send(JSON.stringify({ type:"chat", from:data.from, text:data.text }));
+      }
+      else if(data.group) {
+        // جروب شات
+        data.group.forEach(u=>{
+          const target = users[u];
+          if(target && target.readyState===WebSocket.OPEN) {
+            target.send(JSON.stringify({ type:"chat", from:data.from, text:data.text, group:data.group }));
+          }
         });
-        if (users[data.from] && users[data.from].readyState === WebSocket.OPEN)
-          users[data.from].send(JSON.stringify({ type:"chat", from:data.from, text:data.text, group:data.group }));
+        // المرسل يشوف رسالته أيضا
+        ws.send(JSON.stringify({ type:"chat", from:data.from, text:data.text, group:data.group }));
       }
     }
   });
 
-  ws.on("close", () => {
-    if (currentUsername) {
-      delete users[currentUsername];
-      broadcastUserList();
-    }
+  ws.on("close", ()=> {
+    if(ws.username) delete users[ws.username];
+    broadcastUserList();
   });
-
-  ws.on("error", () => {
-    if (currentUsername) {
-      delete users[currentUsername];
-      broadcastUserList();
-    }
+  ws.on("error", ()=> {
+    if(ws.username) delete users[ws.username];
+    broadcastUserList();
   });
 });
 
-// تحديث قائمة اليوزرز لجميع المستخدمين
+// إرسال قائمة اليوزرز أونلاين لكل الكلاينتس
 function broadcastUserList() {
   const list = Object.keys(users);
-  list.forEach(u => {
-    if (users[u].readyState === WebSocket.OPEN)
-      users[u].send(JSON.stringify({ type:"user_list", users: list }));
+  Object.values(users).forEach(u=>{
+    if(u.readyState === WebSocket.OPEN) {
+      u.send(JSON.stringify({ type:"user_list", users:list }));
+    }
   });
 }
