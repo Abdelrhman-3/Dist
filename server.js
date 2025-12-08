@@ -3,65 +3,87 @@ const express = require("express");
 
 const PORT = process.env.PORT || 3000;
 const app = express();
-const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// لو حبيت بعدين تخدم ملفات فرونت، ممكن تحط public folder
+// app.use(express.static("public"));
+
+const server = app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// WebSocket server
 const wss = new WebSocket.Server({ server });
 
-// حفظ اليوزرز أونلاين: { username: ws }
-let users = {};
+// Map لتخزين اليوزرز مع الـ WebSocket الخاص بهم
+let clients = new Map(); // Map<username, ws>
 
-wss.on("connection", ws => {
+wss.on("connection", (ws) => {
+  let thisUser = null;
 
-  ws.on("message", msg => {
+  console.log("New client connected");
+
+  ws.on("message", (message) => {
     let data;
-    try { data = JSON.parse(msg); } 
-    catch(e) { return; }
+    try { data = JSON.parse(message.toString()); } 
+    catch(e) { console.log("Invalid JSON message"); return; }
 
-    if(data.type === "register") {
-      ws.username = data.username;
-      users[data.username] = ws;
-      broadcastUserList();
+    // ================= تسجيل الدخول =================
+    if (data.type === "login") {
+      thisUser = data.username;
+      clients.set(thisUser, ws);
+      console.log(`User logged in: ${thisUser}`);
+      broadcastUsers();
+      return;
     }
 
-    else if(data.type === "chat") {
-      if(data.to) { 
-        // شات فردي
-        const target = users[data.to];
-        if(target && target.readyState === WebSocket.OPEN) {
-          target.send(JSON.stringify({ type:"chat", from:data.from, text:data.text }));
+    // ================= شات =================
+    if (data.type === "chat") {
+      // شات فردي
+      if (data.to) {
+        const target = clients.get(data.to);
+        if (target && target.readyState === WebSocket.OPEN) {
+          target.send(JSON.stringify(data));
         }
-        // رسائل الself تظهر عند المرسل نفسه
-        ws.send(JSON.stringify({ type:"chat", from:data.from, text:data.text }));
       }
-      else if(data.group) {
-        // جروب شات
-        data.group.forEach(u=>{
-          const target = users[u];
-          if(target && target.readyState===WebSocket.OPEN) {
-            target.send(JSON.stringify({ type:"chat", from:data.from, text:data.text, group:data.group }));
+      // شات جروب
+      else if (data.group && Array.isArray(data.group)) {
+        data.group.forEach(u => {
+          const target = clients.get(u);
+          if (target && target.readyState === WebSocket.OPEN) {
+            target.send(JSON.stringify(data));
           }
         });
-        // المرسل يشوف رسالته أيضا
-        ws.send(JSON.stringify({ type:"chat", from:data.from, text:data.text, group:data.group }));
       }
+      // إظهار الرسالة عند المرسل أيضاً
+      if (thisUser && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data));
+      }
+    }
+
+  });
+
+  ws.on("close", () => { 
+    if (thisUser) {
+      clients.delete(thisUser); 
+      console.log(`User disconnected: ${thisUser}`);
+      broadcastUsers();
     }
   });
 
-  ws.on("close", ()=> {
-    if(ws.username) delete users[ws.username];
-    broadcastUserList();
-  });
-  ws.on("error", ()=> {
-    if(ws.username) delete users[ws.username];
-    broadcastUserList();
+  ws.on("error", () => { 
+    if (thisUser) {
+      clients.delete(thisUser); 
+      console.log(`User error & removed: ${thisUser}`);
+      broadcastUsers();
+    }
   });
 });
 
-// إرسال قائمة اليوزرز أونلاين لكل الكلاينتس
-function broadcastUserList() {
-  const list = Object.keys(users);
-  Object.values(users).forEach(u=>{
-    if(u.readyState === WebSocket.OPEN) {
-      u.send(JSON.stringify({ type:"user_list", users:list }));
-    }
+// إرسال قائمة المستخدمين أونلاين لكل الكلاينتس
+function broadcastUsers() {
+  const list = Array.from(clients.keys());
+  const msg = JSON.stringify({ type:"users", list });
+  clients.forEach(ws => { 
+    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
   });
 }
