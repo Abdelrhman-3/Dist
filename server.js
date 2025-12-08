@@ -3,7 +3,7 @@ const express = require("express");
 
 const PORT = process.env.PORT || 3000;
 const app = express();
-app.use(express.static("public")); // لو حابب تحط ملفات فرونت في public folder
+app.use(express.static("public")); // public folder للفرونت
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
@@ -13,7 +13,7 @@ const wss = new WebSocket.Server({ server });
 
 let clients = new Map(); // Map<username, ws>
 let privateChats = new Map(); // Map<chatKey, [{from,to,text,time}]>
-let groupChats = new Map();   // Map<groupKey, [{from,text,time}]>
+let groupChats = new Map();   // Map<groupKey, {members:[...], messages:[...]}>
 
 wss.on("connection", (ws) => {
   let thisUser = null;
@@ -21,7 +21,7 @@ wss.on("connection", (ws) => {
   ws.on("message", (message) => {
     let data;
     try { data = JSON.parse(message.toString()); }
-    catch (e) { console.log("Non-JSON message ignored"); return; }
+    catch { return; }
 
     switch(data.type) {
       case "login":
@@ -37,24 +37,26 @@ wss.on("connection", (ws) => {
         break;
 
       case "get_group_chat":
-        if (!data.group) return;
-        const groupKey = data.group.sort().join("_");
-        ws.send(JSON.stringify({ type: "group_history", groupId: groupKey, messages: groupChats.get(groupKey) || [] }));
+        if (!data.groupId) return;
+        const gKey = data.groupId;
+        if (groupChats.has(gKey)) {
+          ws.send(JSON.stringify({ type: "group_history", groupId: gKey, messages: groupChats.get(gKey).messages }));
+        }
         break;
 
       case "chat":
-        const { to, text, group } = data;
+        const { to, text, groupId } = data;
         const timestamp = Date.now();
 
-        if (group && group.length > 1) {
+        if (groupId) {
           // جروب
-          const gKey = group.sort().join("_");
-          if (!groupChats.has(gKey)) groupChats.set(gKey, []);
-          groupChats.get(gKey).push({ from: thisUser, text, time: timestamp });
+          if (!groupChats.has(groupId)) return;
+          const g = groupChats.get(groupId);
+          g.messages.push({ from: thisUser, text, time: timestamp });
 
-          group.forEach(u => {
+          g.members.forEach(u => {
             if (clients.has(u) && clients.get(u).readyState === WebSocket.OPEN) {
-              clients.get(u).send(JSON.stringify({ type: "group_message", groupId: gKey, from: thisUser, text, time: timestamp }));
+              clients.get(u).send(JSON.stringify({ type: "group_message", groupId, from: thisUser, text, time: timestamp }));
             }
           });
 
@@ -70,6 +72,21 @@ wss.on("connection", (ws) => {
             }
           });
         }
+        break;
+
+      case "create_group":
+        const { groupName, members } = data;
+        if (!groupName || !members || members.length === 0) return;
+
+        const groupKey = members.sort().join("_") + "_" + groupName;
+        if (!groupChats.has(groupKey)) groupChats.set(groupKey, { members, messages: [] });
+
+        // إرسال تحديث للجميع في المجموعة
+        members.forEach(u => {
+          if (clients.has(u) && clients.get(u).readyState === WebSocket.OPEN) {
+            clients.get(u).send(JSON.stringify({ type: "new_group", groupId: groupKey, name: groupName, members }));
+          }
+        });
         break;
     }
   });
