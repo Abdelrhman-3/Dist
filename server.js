@@ -3,17 +3,22 @@ const express = require("express");
 
 const PORT = process.env.PORT || 3000;
 const app = express();
-app.use(express.static("public")); // public folder للفرونت
+
+// لو حبيت بعدين تخدم ملفات فرونت
+app.use(express.static("public"));
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
+// WebSocket server
 const wss = new WebSocket.Server({ server });
 
-let clients = new Map(); // Map<username, ws>
-let privateChats = new Map(); // Map<chatKey, [{from,to,text,time}]>
-let groupChats = new Map();   // Map<groupKey, {members:[...], messages:[...]}>
+// Map<username, ws>
+let clients = new Map();
+// حفظ الشات لكل شخص أو جروب
+let chats = {}; // { "user1_user2": [messages], "groupId": [messages] }
+let groups = {}; // { groupId: {name, members: [username] } }
 
 wss.on("connection", (ws) => {
   let thisUser = null;
@@ -21,7 +26,9 @@ wss.on("connection", (ws) => {
   ws.on("message", (message) => {
     let data;
     try { data = JSON.parse(message.toString()); }
-    catch { return; }
+    catch(e){ console.log("Invalid JSON"); return; }
+
+    if(!data.type) return;
 
     switch(data.type) {
       case "login":
@@ -30,82 +37,63 @@ wss.on("connection", (ws) => {
         broadcastUserList();
         break;
 
-      case "get_chat":
-        if (!data.to) return;
-        const chatKey = [thisUser, data.to].sort().join("_");
-        ws.send(JSON.stringify({ type: "chat_history", chatId: chatKey, messages: privateChats.get(chatKey) || [] }));
-        break;
-
-      case "get_group_chat":
-        if (!data.groupId) return;
-        const gKey = data.groupId;
-        if (groupChats.has(gKey)) {
-          ws.send(JSON.stringify({ type: "group_history", groupId: gKey, messages: groupChats.get(gKey).messages }));
-        }
-        break;
-
       case "chat":
-        const { to, text, groupId } = data;
-        const timestamp = Date.now();
+        const { to, text } = data; // to ممكن يكون user أو groupId
+        const msgObj = { from: thisUser, text };
 
-        if (groupId) {
-          // جروب
-          if (!groupChats.has(groupId)) return;
-          const g = groupChats.get(groupId);
-          g.messages.push({ from: thisUser, text, time: timestamp });
+        // حفظ الرسالة
+        if(!chats[to]) chats[to] = [];
+        chats[to].push(msgObj);
 
-          g.members.forEach(u => {
-            if (clients.has(u) && clients.get(u).readyState === WebSocket.OPEN) {
-              clients.get(u).send(JSON.stringify({ type: "group_message", groupId, from: thisUser, text, time: timestamp }));
-            }
+        // إرسال للمتلقيين
+        if(groups[to]) {
+          groups[to].members.forEach(member => {
+            const client = clients.get(member);
+            if(client && client.readyState === WebSocket.OPEN) client.send(JSON.stringify({type:"chat", to, msg: msgObj}));
           });
-
-        } else if (to) {
+        } else {
           // شات فردي
-          const pKey = [thisUser, to].sort().join("_");
-          if (!privateChats.has(pKey)) privateChats.set(pKey, []);
-          privateChats.get(pKey).push({ from: thisUser, to, text, time: timestamp });
-
-          [thisUser, to].forEach(u => {
-            if (clients.has(u) && clients.get(u).readyState === WebSocket.OPEN) {
-              clients.get(u).send(JSON.stringify({ type: "chat_message", chatId: pKey, from: thisUser, to, text, time: timestamp }));
-            }
-          });
+          const client = clients.get(to);
+          if(client && client.readyState === WebSocket.OPEN) client.send(JSON.stringify({type:"chat", to, msg: msgObj}));
+          // لازم يظهر للمرسل كمان
+          if(clients.get(thisUser) && clients.get(thisUser).readyState===WebSocket.OPEN)
+            clients.get(thisUser).send(JSON.stringify({type:"chat", to, msg: msgObj}));
         }
         break;
 
-      case "create_group":
-        const { groupName, members } = data;
-        if (!groupName || !members || members.length === 0) return;
+      case "getHistory":
+        const key = data.to;
+        const history = chats[key] || [];
+        ws.send(JSON.stringify({type:"history", to: key, messages: history}));
+        break;
 
-        const groupKey = members.sort().join("_") + "_" + groupName;
-        if (!groupChats.has(groupKey)) groupChats.set(groupKey, { members, messages: [] });
-
-        // إرسال تحديث للجميع في المجموعة
-        members.forEach(u => {
-          if (clients.has(u) && clients.get(u).readyState === WebSocket.OPEN) {
-            clients.get(u).send(JSON.stringify({ type: "new_group", groupId: groupKey, name: groupName, members }));
-          }
-        });
+      case "createGroup":
+        const groupId = "group_" + Date.now();
+        groups[groupId] = { name: data.name, members: data.members };
+        broadcastUserList(); // تحديث للجميع
         break;
     }
   });
 
   ws.on("close", () => {
-    if (thisUser) clients.delete(thisUser);
-    broadcastUserList();
+    if(thisUser) {
+      clients.delete(thisUser);
+      broadcastUserList();
+    }
   });
 
   ws.on("error", () => {
-    if (thisUser) clients.delete(thisUser);
-    broadcastUserList();
+    if(thisUser) {
+      clients.delete(thisUser);
+      broadcastUserList();
+    }
   });
 });
 
 function broadcastUserList() {
-  const users = Array.from(clients.keys());
-  const msg = JSON.stringify({ type: "user_list", users });
-  clients.forEach((ws) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
-  });
+  const online = Array.from(clients.keys());
+  const obj = { type:"userList", users: online, groups };
+  for(let client of clients.values()) {
+    if(client.readyState === WebSocket.OPEN) client.send(JSON.stringify(obj));
+  }
 }
