@@ -4,75 +4,81 @@ const express = require("express");
 const PORT = process.env.PORT || 3000;
 const app = express();
 
-// لو حبيت بعدين تخدم ملفات فرونت، ممكن تحط public folder
-// app.use(express.static("public"));
-
-const server = app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
-
-// WebSocket server
+const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
 const wss = new WebSocket.Server({ server });
 
-let clients = new Set();
+let clients = new Map(); // Map<ws, username>
+let groups = {}; // { groupName: Set<username> }
 
 wss.on("connection", (ws) => {
-  clients.add(ws);
-  console.log("New client connected (total: " + clients.size + ")");
+  console.log("New connection");
 
-  ws.on("message", (message) => {
+  ws.on("message", (msg) => {
     let data;
-    try { data = JSON.parse(message.toString()); }
-    catch (e) { console.log("Non-JSON message ignored"); return; }
+    try { data = JSON.parse(msg.toString()); }
+    catch { return; }
 
-    if (!data.type) { console.log("Message without type ignored"); return; }
+    if (!data.type) return;
 
-    // ================= CHAT =================
-    if (data.type === "chat") {
-      broadcast({ type:"chat", username:data.username, text:data.text });
+    // ================= USER REGISTER =================
+    if (data.type === "register") {
+      clients.set(ws, data.username);
+      broadcastUserList();
     }
 
-    // ================= CALCULATOR =================
-    else if (data.type === "calc") {
-      const reqId = data.requestId || null;
-      const op = data.op;
-      const payload = data.payload || {};
-      const deg = !!data.deg;
-
-      function toRad(v) { return deg ? (v*Math.PI)/180 : v; }
-      function safeNum(v) { const n = Number(v); return isFinite(n)?n:NaN; }
-
-      let res=null, error=null;
-      try {
-        switch(op){
-          case "add": res = safeNum(payload.x)+safeNum(payload.y); break;
-          case "sub": res = safeNum(payload.x)-safeNum(payload.y); break;
-          case "mul": res = safeNum(payload.x)*safeNum(payload.y); break;
-          case "div": res = safeNum(payload.y)===0?"Division by zero":safeNum(payload.x)/safeNum(payload.y); break;
-          case "pow": res = Math.pow(safeNum(payload.x), safeNum(payload.y)); break;
-          case "sqrt": res = Math.sqrt(safeNum(payload.x)); break;
-          case "log": res = Math.log10(safeNum(payload.x)); break;
-          case "ln": res = Math.log(safeNum(payload.x)); break;
-          case "sin": res = Math.sin(toRad(safeNum(payload.x))); break;
-          case "cos": res = Math.cos(toRad(safeNum(payload.x))); break;
-          case "tan": res = Math.tan(toRad(safeNum(payload.x))); break;
-          default: error="Unknown operation";
+    // ================= PRIVATE CHAT =================
+    else if (data.type === "private_chat") {
+      // data.to = username
+      for (let [client, uname] of clients) {
+        if (uname === data.to && client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: "private_chat",
+            from: data.from,
+            text: data.text
+          }));
         }
-        if(isNaN(res)) error="Invalid number";
-      } catch(e){ error="Calculation error"; }
-
-      ws.send(JSON.stringify({ type:"calc_result", requestId:reqId, result:res, error:error }));
+      }
     }
 
+    // ================= GROUP CHAT =================
+    else if (data.type === "group_chat") {
+      const group = groups[data.group];
+      if (!group) return;
+      for (let [client, uname] of clients) {
+        if (group.has(uname) && client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: "group_chat",
+            from: data.from,
+            group: data.group,
+            text: data.text
+          }));
+        }
+      }
+    }
+
+    // ================= CREATE GROUP =================
+    else if (data.type === "create_group") {
+      const name = data.group;
+      groups[name] = new Set(data.members); // members = [username1, username2]
+    }
   });
 
-  ws.on("close", () => { clients.delete(ws); console.log("Client disconnected (total:"+clients.size+")"); });
-  ws.on("error", () => { clients.delete(ws); console.log("Client error and removed"); });
+  ws.on("close", () => {
+    clients.delete(ws);
+    broadcastUserList();
+  });
+
+  ws.on("error", () => {
+    clients.delete(ws);
+    broadcastUserList();
+  });
 });
 
-function broadcast(obj) {
-  const str = JSON.stringify(obj);
-  for (let client of clients)
-    if (client.readyState===WebSocket.OPEN)
-      try { client.send(str); } catch(e) {}
+function broadcastUserList() {
+  const userList = Array.from(clients.values());
+  for (let [client] of clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify({ type: "user_list", users: userList }));
+    }
+  }
 }
