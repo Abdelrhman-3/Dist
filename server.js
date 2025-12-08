@@ -32,24 +32,23 @@ wss.on("connection", (ws) => {
 
     // شات فردي أو جروب
     if (data.type === "chat") {
+      // فردي
       if (data.to) {
-        // رسالة فردية
         if (users[data.to] && users[data.to].readyState === WebSocket.OPEN)
-          users[data.to].send(JSON.stringify({ type:"chat", from:data.from, text:data.text }));
+          users[data.to].send(JSON.stringify({ type:"chat", from:data.from, text:data.text, to:data.to }));
 
-        // نرسل للمرسل نفسه
+        // نرسل نسخة للمرسل
         if (users[data.from] && users[data.from].readyState === WebSocket.OPEN)
-          users[data.from].send(JSON.stringify({ type:"chat", from:data.from, text:data.text }));
+          users[data.from].send(JSON.stringify({ type:"chat", from:data.from, text:data.text, to:data.to }));
       } 
+      // جروب
       else if (data.group && Array.isArray(data.group)) {
-        // جروب
         data.group.forEach(u => {
           if (users[u] && users[u].readyState === WebSocket.OPEN)
-            users[u].send(JSON.stringify({ type:"chat", from:data.from, text:data.text }));
+            users[u].send(JSON.stringify({ type:"chat", from:data.from, text:data.text, group:data.group }));
         });
-        // نسخة للمرسل
         if (users[data.from] && users[data.from].readyState === WebSocket.OPEN)
-          users[data.from].send(JSON.stringify({ type:"chat", from:data.from, text:data.text }));
+          users[data.from].send(JSON.stringify({ type:"chat", from:data.from, text:data.text, group:data.group }));
       }
     }
   });
