@@ -4,20 +4,19 @@ const express = require("express");
 const PORT = process.env.PORT || 3000;
 const app = express();
 
-// لو حبيت بعدين تخدم ملفات فرونت
 app.use(express.static("public"));
 
 const server = app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
 
-// ================= CHAT SERVER =================
+
 const wss = new WebSocket.Server({ server });
 
-let clients = new Map();          // Map<username, ws>
-let privateChats = new Map();     // Map<chatKey, messages[]>
-let groupChats = new Map();       // Map<groupKey, messages[]>
-let userGroups = new Map();       // Map<username, groupKeys[]>
+let clients = new Map();         
+let privateChats = new Map();    
+let groupChats = new Map();      
+let userGroups = new Map();       
 
 function addUserToGroup(username, groupKey) {
   if (!userGroups.has(username)) userGroups.set(username, []);
@@ -25,7 +24,7 @@ function addUserToGroup(username, groupKey) {
   if (!arr.includes(groupKey)) arr.push(groupKey);
 }
 
-// ================== CONNECTION ==================
+
 wss.on("connection", (ws) => {
   let thisUser = null;
 
@@ -36,7 +35,7 @@ wss.on("connection", (ws) => {
 
     if (!data.type) return;
 
-    // ---------------- LOGIN ----------------
+
     if (data.type === "login") {
       thisUser = data.username;
       clients.set(thisUser, ws);
@@ -44,7 +43,7 @@ wss.on("connection", (ws) => {
       sendUserGroups(thisUser);
     }
 
-    // --------------- PRIVATE CHAT HISTORY ----------------
+
     else if (data.type === "get_chat") {
       const chatKey = [thisUser, data.to].sort().join("_");
       ws.send(JSON.stringify({
@@ -54,7 +53,7 @@ wss.on("connection", (ws) => {
       }));
     }
 
-    // --------------- GROUP CHAT HISTORY ----------------
+
     else if (data.type === "get_group_chat") {
       const groupKey = data.group.sort().join("_");
       ws.send(JSON.stringify({
@@ -64,22 +63,21 @@ wss.on("connection", (ws) => {
       }));
     }
 
-    // --------------- CREATE GROUP ----------------
     else if (data.type === "create_group") {
       const group = data.members.sort();
       const gKey = group.join("_");
 
       if (!groupChats.has(gKey)) groupChats.set(gKey, []);
       group.forEach(u => addUserToGroup(u, gKey));
-      broadcastUserGroups();  // يخلي الجروب يظهر لكل الأعضاء
+      broadcastUserGroups();  
     }
 
-    // ---------------- SEND CHAT MESSAGE ----------------
+
     else if (data.type === "chat") {
       const { to, text, group: groupList } = data;
       const time = Date.now();
 
-      // GROUP MESSAGE
+
       if (groupList && groupList.length > 1) {
         const gKey2 = groupList.sort().join("_");
         if (!groupChats.has(gKey2)) groupChats.set(gKey2, []);
@@ -98,7 +96,7 @@ wss.on("connection", (ws) => {
         });
       }
 
-      // PRIVATE MESSAGE
+
       else if (to) {
         const pKey = [thisUser, to].sort().join("_");
         if (!privateChats.has(pKey)) privateChats.set(pKey, []);
@@ -118,7 +116,6 @@ wss.on("connection", (ws) => {
       }
     }
 
-    // ---------------- CALCULATOR ----------------
     else if (data.type === "calc") {
       const reqId = data.requestId || null;
       const op = data.op;
@@ -164,7 +161,7 @@ wss.on("connection", (ws) => {
 
 });
 
-// ================= HELPER FUNCTIONS =================
+
 function broadcastUserList() {
   const users = Array.from(clients.keys());
   const msg = JSON.stringify({ type: "user_list", users });
